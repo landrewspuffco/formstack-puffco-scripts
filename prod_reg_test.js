@@ -1,5 +1,5 @@
 
-  (function () {
+(function () {
   var FORM_ID = '6482561';
   var API_AUTH_TOKEN = '5c95e121eeeea41daa9f303a74e0f4afea08a00d6ef40102e758771e515da493';
 
@@ -22,9 +22,52 @@
   var form = window.fsApi().getForm(FORM_ID);
   var allowNextNavigation = false;
 
-  function goToNextPageForReal() {
-    allowNextNavigation = true;
-    return form.goToNextPage();
+  var log = [];
+
+  function say(msg) {
+    log.push(msg);
+    if (log.length > 14) log.shift();
+    render();
+  }
+
+  function render() {
+    var field = form.getField(FIELD_ERROR_MESSAGE);
+    if (!field) return;
+    field.setTypeAttribute(
+      'content',
+      '<div style="font:11px/1.5 monospace;color:#0a0;text-align:left;">' +
+        log.join('<br>') +
+      '</div>'
+    );
+  }
+
+  function buttonReport() {
+    var buttons = document.querySelectorAll('button');
+    var parts = [];
+    for (var i = 0; i < buttons.length; i++) {
+      var txt = (buttons[i].textContent || '').trim();
+      if (!txt) txt = '(no text)';
+      var disp = buttons[i].style.display === '' ? 'default' : buttons[i].style.display;
+      parts.push(txt + '[' + disp + ']');
+    }
+    return parts.length ? parts.join(' ') : 'NO BUTTONS IN DOM';
+  }
+
+  function pagingReport() {
+    try {
+      var ctx = form.getPagingContext();
+      if (!ctx) return 'ctx=null';
+      return 'ctx page=' + ctx.currentPage + '/' + ctx.totalPages;
+    } catch (e) {
+      return 'ctx THREW: ' + e.message;
+    }
+  }
+
+  function snapshot(label) {
+    setTimeout(function () {
+      say(label + ' | ' + pagingReport());
+      say('  btns: ' + buttonReport());
+    }, 300);
   }
 
   function fv(fieldId) {
@@ -37,39 +80,10 @@
     if (field) field.setValue({ value: value });
   }
 
-  function showMessage(fieldId, text, color) {
-    var field = form.getField(fieldId);
-    if (!field) return;
-    field.setTypeAttribute(
-      'content',
-      '<div style="color: ' + (color || '#c0392b') + ';">' + (text || '') + '</div>'
-    );
-  }
-
-  function clearMessage(fieldId) {
-    showMessage(fieldId, '', '#000000');
-  }
-
   function setDescriptionText(fieldId, text) {
     var field = form.getField(fieldId);
     if (!field) return;
     field.setTypeAttribute('content', '<div>' + (text || '') + '</div>');
-  }
-
-  function showSpinner(fieldId, text) {
-    var field = form.getField(fieldId);
-    if (!field) return;
-    var spinnerSvg =
-      '<svg width="18" height="18" viewBox="0 0 50 50" style="vertical-align:middle;margin-right:8px;">' +
-      '<circle cx="25" cy="25" r="20" fill="none" stroke="#999" stroke-width="5" ' +
-      'stroke-linecap="round" stroke-dasharray="90,150">' +
-      '<animateTransform attributeName="transform" type="rotate" from="0 25 25" to="360 25 25" ' +
-      'dur="1s" repeatCount="indefinite"/>' +
-      '</circle></svg>';
-    field.setTypeAttribute(
-      'content',
-      '<div style="color:#555;">' + spinnerSvg + (text || 'Checking...') + '</div>'
-    );
   }
 
   function authHeaders() {
@@ -79,51 +93,30 @@
     };
   }
 
-  function currentPage() {
-    try {
-      var ctx = form.getPagingContext();
-      return ctx && ctx.currentPage ? ctx.currentPage : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
   function isBlocked() {
     return fv(FIELD_IS_THIS_YOUR_DEVICE).trim() === 'No' ||
            fv(FIELD_SECOND_BLOCKER).trim() === 'No';
   }
 
-  function writeNextButtonVisibility(visible) {
-    var buttons = document.querySelectorAll('button');
-    for (var i = 0; i < buttons.length; i++) {
-      if (buttons[i].textContent.trim() === 'Next') {
-        buttons[i].style.display = visible ? '' : 'none';
-      }
-    }
-  }
-
-  function syncNextButton(pageOverride) {
-    var page = pageOverride != null ? pageOverride : currentPage();
-    var shouldHide = (page === BLOCKER_PAGE) && isBlocked();
-    writeNextButtonVisibility(!shouldHide);
-  }
-
-  function syncNextButtonSoon(pageOverride) {
-    setTimeout(function () { syncNextButton(pageOverride); }, 60);
-    setTimeout(function () { syncNextButton(pageOverride); }, 250);
+  function goToNextPageForReal() {
+    allowNextNavigation = true;
+    say('calling goToNextPage()');
+    return form.goToNextPage();
   }
 
   function runValidationChain() {
     var email = fv(FIELD_EMAIL).trim();
     var serialNumber = fv(FIELD_SERIAL_NUMBER).trim();
 
-    clearMessage(FIELD_ERROR_MESSAGE);
     setFv(HIDDEN_REGISTERED_USER_ID, '');
     setFv(FIELD_REQUESTING_TRANSFER, 'No');
 
-    if (!email || !serialNumber) return;
+    if (!email || !serialNumber) {
+      say('MISSING email or serial - chain aborted');
+      return;
+    }
 
-    showSpinner(FIELD_ERROR_MESSAGE, 'Checking your serial number...');
+    say('validating ' + serialNumber);
 
     fetch(VALIDATE_SERIAL_URL, {
       method: 'POST',
@@ -133,11 +126,12 @@
       .then(function (res) { return res.json(); })
       .then(function (validateData) {
         if (!validateData.is_recognized) {
-          showMessage(FIELD_ERROR_MESSAGE, 'This serial number is not in a valid format. Please check the number and try again. If still having issues, please contact Puffco support at www.puffco.com/pages/contact.');
+          say('serial NOT recognized - staying on page 1');
           return;
         }
 
         var productName = validateData.product_name || '';
+        say('recognized: ' + productName);
 
         return fetch(PRODUCT_STATUS_URL + '?serial_number=' + encodeURIComponent(serialNumber), {
           method: 'GET',
@@ -147,18 +141,20 @@
           .then(function (statusData) {
             function advance() {
               return goToNextPageForReal().then(function () {
-                clearMessage(FIELD_ERROR_MESSAGE);
+                say('goToNextPage resolved');
                 setDescriptionText(FIELD_DEVICE_DISPLAY, productName);
-                syncNextButtonSoon(BLOCKER_PAGE);
+                snapshot('after advance');
               });
             }
 
             if (!statusData.is_registered) {
+              say('not registered');
               return advance();
             }
 
             var registeredUserId = statusData.registered_user ? statusData.registered_user.id : null;
             setFv(HIDDEN_REGISTERED_USER_ID, registeredUserId != null ? String(registeredUserId) : '');
+            say('already registered, owner=' + registeredUserId);
 
             return fetch(USER_REGISTRATIONS_URL + '?email=' + encodeURIComponent(email), {
               method: 'GET',
@@ -167,22 +163,18 @@
               .then(function (res3) { return res3.json(); })
               .then(function (usersData) {
                 var lookedUpUserId = usersData.user ? usersData.user.id : null;
-
                 var isSameUser =
                   lookedUpUserId != null &&
                   registeredUserId != null &&
                   String(lookedUpUserId) === String(registeredUserId);
-
-                if (!isSameUser) {
-                  setFv(FIELD_REQUESTING_TRANSFER, 'Yes');
-                }
-
+                say('lookup=' + lookedUpUserId + ' same=' + isSameUser);
+                if (!isSameUser) setFv(FIELD_REQUESTING_TRANSFER, 'Yes');
                 return advance();
               });
           });
       })
-      .catch(function () {
-        showMessage(FIELD_ERROR_MESSAGE, 'Something went wrong checking this serial number. Please try again.');
+      .catch(function (e) {
+        say('CHAIN ERROR: ' + e.message);
       });
   }
 
@@ -190,7 +182,8 @@
     type: 'change',
     onFormEvent: function (event) {
       if (event.data.fieldId === FIELD_IS_THIS_YOUR_DEVICE || event.data.fieldId === FIELD_SECOND_BLOCKER) {
-        syncNextButtonSoon();
+        say('blocker field changed, blocked=' + isBlocked());
+        snapshot('after blocker change');
       }
       return Promise.resolve(event);
     }
@@ -199,35 +192,27 @@
   form.registerFormEventListener({
     type: 'change-page',
     onFormEvent: function (event) {
-      var destination = event.data ? event.data.destinationPage : null;
+      var d = event.data || {};
+      say('change-page src=' + d.sourcePage + ' dest=' + d.destinationPage + ' bypass=' + allowNextNavigation);
 
       if (allowNextNavigation) {
         allowNextNavigation = false;
-        syncNextButtonSoon(destination);
+        snapshot('programmatic nav');
         return Promise.resolve(event);
       }
 
-      if (event.data && event.data.sourcePage === 1) {
+      if (d.sourcePage === 1) {
+        say('PREVENTING page 1 exit');
         event.preventDefault();
         runValidationChain();
         return Promise.resolve(event);
       }
 
-      if (event.data && event.data.sourcePage === BLOCKER_PAGE) {
-        var isMovingForward = event.data.destinationPage > event.data.sourcePage;
-        if (isBlocked() && isMovingForward) {
-          event.preventDefault();
-          syncNextButtonSoon(BLOCKER_PAGE);
-          return Promise.resolve(event);
-        }
-        syncNextButtonSoon(destination);
-        return Promise.resolve(event);
-      }
-
-      syncNextButtonSoon(destination);
+      snapshot('nav from page ' + d.sourcePage);
       return Promise.resolve(event);
     }
   });
 
-  syncNextButtonSoon();
+  say('=== script loaded ===');
+  snapshot('initial load');
 })();
