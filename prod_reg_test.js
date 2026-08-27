@@ -1,5 +1,5 @@
 
-(function () {
+  (function () {
   var FORM_ID = '6482561';
   var API_AUTH_TOKEN = '5c95e121eeeea41daa9f303a74e0f4afea08a00d6ef40102e758771e515da493';
 
@@ -16,6 +16,8 @@
   var FIELD_IS_THIS_YOUR_DEVICE = '195793109';
   var FIELD_SECOND_BLOCKER = '197804757';
   var FIELD_REQUESTING_TRANSFER = '197799571';
+
+  var BLOCKER_PAGE = 2;
 
   var form = window.fsApi().getForm(FORM_ID);
   var allowNextNavigation = false;
@@ -77,6 +79,40 @@
     };
   }
 
+  function currentPage() {
+    try {
+      var ctx = form.getPagingContext();
+      return ctx && ctx.currentPage ? ctx.currentPage : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function isBlocked() {
+    return fv(FIELD_IS_THIS_YOUR_DEVICE).trim() === 'No' ||
+           fv(FIELD_SECOND_BLOCKER).trim() === 'No';
+  }
+
+  function writeNextButtonVisibility(visible) {
+    var buttons = document.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i++) {
+      if (buttons[i].textContent.trim() === 'Next') {
+        buttons[i].style.display = visible ? '' : 'none';
+      }
+    }
+  }
+
+  function syncNextButton(pageOverride) {
+    var page = pageOverride != null ? pageOverride : currentPage();
+    var shouldHide = (page === BLOCKER_PAGE) && isBlocked();
+    writeNextButtonVisibility(!shouldHide);
+  }
+
+  function syncNextButtonSoon(pageOverride) {
+    setTimeout(function () { syncNextButton(pageOverride); }, 60);
+    setTimeout(function () { syncNextButton(pageOverride); }, 250);
+  }
+
   function runValidationChain() {
     var email = fv(FIELD_EMAIL).trim();
     var serialNumber = fv(FIELD_SERIAL_NUMBER).trim();
@@ -109,11 +145,16 @@
         })
           .then(function (res2) { return res2.json(); })
           .then(function (statusData) {
-            if (!statusData.is_registered) {
+            function advance() {
               return goToNextPageForReal().then(function () {
                 clearMessage(FIELD_ERROR_MESSAGE);
                 setDescriptionText(FIELD_DEVICE_DISPLAY, productName);
+                syncNextButtonSoon(BLOCKER_PAGE);
               });
+            }
+
+            if (!statusData.is_registered) {
+              return advance();
             }
 
             var registeredUserId = statusData.registered_user ? statusData.registered_user.id : null;
@@ -134,16 +175,9 @@
 
                 if (!isSameUser) {
                   setFv(FIELD_REQUESTING_TRANSFER, 'Yes');
-                  return goToNextPageForReal().then(function () {
-                    clearMessage(FIELD_ERROR_MESSAGE);
-                    setDescriptionText(FIELD_DEVICE_DISPLAY, productName);
-                  });
-                } else {
-                  return goToNextPageForReal().then(function () {
-                    clearMessage(FIELD_ERROR_MESSAGE);
-                    setDescriptionText(FIELD_DEVICE_DISPLAY, productName);
-                  });
                 }
+
+                return advance();
               });
           });
       })
@@ -152,38 +186,11 @@
       });
   }
 
-  // BEST-EFFORT ONLY - Formstack's Live Form API has no documented method
-  // for hiding the Next button, so this reaches into the raw page directly
-  // rather than using the confirmed-reliable field API. Test live before
-  // trusting this - if it doesn't find the button, nothing breaks, since
-  // the preventDefault() block below is the real, confirmed safety net
-  // regardless of whether this succeeds.
-  function setNextButtonVisible(visible) {
-    var buttons = document.querySelectorAll('button');
-    for (var i = 0; i < buttons.length; i++) {
-      if (buttons[i].textContent.trim() === 'Next') {
-        buttons[i].style.display = visible ? '' : 'none';
-      }
-    }
-  }
-
-  function updatePage2NextButtonVisibility() {
-    // Small delay to let React finish re-rendering before we look for the
-    // button - without this, toggling back to "visible" can silently fail
-    // to find the current DOM node if this runs mid-render.
-    setTimeout(function () {
-      var isThisYourDevice = fv(FIELD_IS_THIS_YOUR_DEVICE).trim();
-      var secondBlockerValue = fv(FIELD_SECOND_BLOCKER).trim();
-      var shouldBlock = isThisYourDevice === 'No' || secondBlockerValue === 'No';
-      setNextButtonVisible(!shouldBlock);
-    }, 50);
-  }
-
   form.registerFormEventListener({
     type: 'change',
     onFormEvent: function (event) {
       if (event.data.fieldId === FIELD_IS_THIS_YOUR_DEVICE || event.data.fieldId === FIELD_SECOND_BLOCKER) {
-        updatePage2NextButtonVisibility();
+        syncNextButtonSoon();
       }
       return Promise.resolve(event);
     }
@@ -192,8 +199,11 @@
   form.registerFormEventListener({
     type: 'change-page',
     onFormEvent: function (event) {
+      var destination = event.data ? event.data.destinationPage : null;
+
       if (allowNextNavigation) {
         allowNextNavigation = false;
+        syncNextButtonSoon(destination);
         return Promise.resolve(event);
       }
 
@@ -203,17 +213,21 @@
         return Promise.resolve(event);
       }
 
-      if (event.data && event.data.sourcePage === 2) {
-        var isThisYourDevice = fv(FIELD_IS_THIS_YOUR_DEVICE).trim();
-        var secondBlockerValue = fv(FIELD_SECOND_BLOCKER).trim();
+      if (event.data && event.data.sourcePage === BLOCKER_PAGE) {
         var isMovingForward = event.data.destinationPage > event.data.sourcePage;
-        if ((isThisYourDevice === 'No' || secondBlockerValue === 'No') && isMovingForward) {
+        if (isBlocked() && isMovingForward) {
           event.preventDefault();
+          syncNextButtonSoon(BLOCKER_PAGE);
+          return Promise.resolve(event);
         }
+        syncNextButtonSoon(destination);
         return Promise.resolve(event);
       }
 
+      syncNextButtonSoon(destination);
       return Promise.resolve(event);
     }
   });
+
+  syncNextButtonSoon();
 })();
